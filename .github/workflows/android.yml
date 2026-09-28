@@ -12,6 +12,15 @@ on:
 env:
   GRADLE_VERSION: "8.9"
 
+# `contents: write` lets a failed build post its own Gradle errors as a commit
+# comment. That is not vanity: the runner's log and artifact hosts sit on
+# separate domains that are not reachable from every review environment, while
+# commit comments are served by the ordinary API. Without this, a red build is
+# un-diagnosable from outside the GitHub web UI.
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   build:
     name: Unit tests + release APK
@@ -59,7 +68,19 @@ jobs:
       - name: Run unit tests (includes BROM golden-vector replay)
         run: |
           set +e
-          gradle :app:testDebugUnitTest --stacktrace --no-daemon 2>&1 | tee /tmp/gradle-test.log
+          {
+            echo "=== environment diagnostics ==="
+            echo "gradle: $(command -v gradle || echo MISSING)"
+            gradle --version 2>&1 | head -12
+            echo "java: $(java -version 2>&1 | head -1)"
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            ls -d "$ANDROID_HOME"/platforms/* "$ANDROID_HOME"/build-tools/* 2>&1 | head
+            echo "wrapper properties:"
+            cat gradle/wrapper/gradle-wrapper.properties 2>&1
+            echo "wrapper jar present: $(test -f gradle/wrapper/gradle-wrapper.jar && echo yes || echo no)"
+            echo "==============================="
+          } 2>&1 | tee /tmp/gradle-test.log
+          gradle :app:testDebugUnitTest --stacktrace --no-daemon 2>&1 | tee -a /tmp/gradle-test.log
           code=${PIPESTATUS[0]}
           if [ "$code" -ne 0 ]; then
             {
@@ -163,6 +184,50 @@ jobs:
           files: app/build/outputs/apk/release/app-release.apk
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      # Posts the actual Gradle error text as a commit comment. Job summaries and
+      # log archives both live on hosts that are not reachable from every review
+      # environment; commit comments are served by the ordinary API, so a red
+      # build stays diagnosable without opening the web UI.
+      - name: Report failure details as a commit comment
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG=/tmp/gradle-test.log
+          [ -f /tmp/gradle-assemble.log ] && LOG=/tmp/gradle-assemble.log
+          if [ ! -f "$LOG" ]; then
+            echo "No Gradle log captured; failing before the build started."
+            exit 0
+          fi
+          {
+            echo "### :x: \`${GITHUB_JOB}\` failed on ${GITHUB_REF_NAME}"
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "#### Matched error lines"
+            echo
+            echo '```'
+            grep -E "^e: |^w: .*(error|deprecat)|error:|FAILURE:|What went wrong|Caused by:|Execution failed for task|> Task .* FAILED|Could not (resolve|find)|A problem occurred" "$LOG" | head -100
+            echo '```'
+            echo
+            echo "#### Environment diagnostics"
+            echo
+            echo '```'
+            sed -n '/=== environment diagnostics ===/,/===============================/p' "$LOG"
+            echo '```'
+            echo
+            echo "#### Tail of output"
+            echo
+            echo '```'
+            tail -n 100 "$LOG"
+            echo '```'
+          } > /tmp/failure-report.md
+          wc -c /tmp/failure-report.md
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" \
+            -f body="$(cat /tmp/failure-report.md)" > /dev/null \
+            && echo "Posted failure report as a commit comment." \
+            || echo "Could not post commit comment (token permissions?)."
 
   # Independent check that the committed golden vectors still match upstream.
   # If bkerler/mtkclient changes the BROM wire protocol this fails loudly, which
