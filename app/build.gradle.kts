@@ -193,6 +193,19 @@ tasks.named("preBuild") {
     dependsOn(syncMtkAssets)
 }
 
+// Print failing tests to the console instead of only into the HTML report.
+// CI cannot always reach the report artifact, so the log is the channel that
+// carries failure detail out of the runner.
+tasks.withType<Test>().configureEach {
+    testLogging {
+        events("failed", "skipped")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

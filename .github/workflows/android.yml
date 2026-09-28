@@ -185,10 +185,15 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-      # Posts the actual Gradle error text as a commit comment. Job summaries and
-      # log archives both live on hosts that are not reachable from every review
+      # Posts the actual failure text as a commit comment. Job summaries and log
+      # archives both live on hosts that are not reachable from every review
       # environment; commit comments are served by the ordinary API, so a red
       # build stays diagnosable without opening the web UI.
+      #
+      # Failing test names and stack traces come from Gradle's own console output,
+      # enabled by the testLogging block in app/build.gradle.kts. Parsing the JUnit
+      # XML here instead would need a heredoc, and a heredoc body has to start at
+      # column 0, which terminates the YAML block scalar this script lives in.
       - name: Report failure details as a commit comment
         if: failure()
         env:
@@ -197,18 +202,24 @@ jobs:
           LOG=/tmp/gradle-test.log
           [ -f /tmp/gradle-assemble.log ] && LOG=/tmp/gradle-assemble.log
           if [ ! -f "$LOG" ]; then
-            echo "No Gradle log captured; failing before the build started."
+            echo "No Gradle log captured; the job failed before the build started."
             exit 0
           fi
           {
-            echo "### :x: \`${GITHUB_JOB}\` failed on ${GITHUB_REF_NAME}"
+            echo "### :x: ${GITHUB_JOB} failed on ${GITHUB_REF_NAME}"
             echo
             echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "#### Failing tests (with Gradle context)"
+            echo
+            echo '```'
+            grep -B 2 -A 18 -E "^[^ ].* FAILED$" "$LOG" | head -200 || echo "(no per-test FAILED lines; see below)"
+            echo '```'
             echo
             echo "#### Matched error lines"
             echo
             echo '```'
-            grep -E "^e: |^w: .*(error|deprecat)|error:|FAILURE:|What went wrong|Caused by:|Execution failed for task|> Task .* FAILED|Could not (resolve|find)|A problem occurred" "$LOG" | head -100
+            grep -E "^e: |error:|FAILURE:|What went wrong|Caused by:|Execution failed for task|> Task .* FAILED|Could not (resolve|find)|A problem occurred|AssertionError|ComparisonFailure|expected:" "$LOG" | head -120
             echo '```'
             echo
             echo "#### Environment diagnostics"
@@ -220,7 +231,7 @@ jobs:
             echo "#### Tail of output"
             echo
             echo '```'
-            tail -n 100 "$LOG"
+            tail -n 250 "$LOG"
             echo '```'
           } > /tmp/failure-report.md
           wc -c /tmp/failure-report.md
