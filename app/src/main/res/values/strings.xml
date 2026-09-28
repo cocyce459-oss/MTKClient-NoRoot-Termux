@@ -69,5 +69,8 @@
     <string name="memread_invalid">Address and length must be numbers, e.g. 0x100000 and 0x4000.</string>
     <string name="dumped_bytes">Dumped %1$s to %2$s</string>
     <string name="wrote_bytes">Wrote %1$d bytes to %2$s</string>
-    <string name="partition_dump_failed">Partition '%1$s' is not in the current table — run printgpt first.</string>
+    <!-- Worded without apostrophes on purpose: a raw ' in an Android string
+         resource is a hard aapt2 error, and escaping it as \' is easy to lose to
+         a generator or a shell heredoc. Same reason there are no bare quotes. -->
+    <string name="partition_dump_failed">No partition named %1$s in the current table. Run printgpt first.</string>
 </resources>
