@@ -114,7 +114,9 @@ class GptParserTest {
         val entryCount = 4
         val entrySize = 128
         val totalSectors = entryStartLba + 40
-        val image = ByteArray((totalSectors * sectorSize).coerceAtLeast(0x10000))
+        // ByteArray() takes an Int, and totalSectors is Long because it derives
+        // from entryStartLba. The entry offsets below already narrow with toInt().
+        val image = ByteArray((totalSectors * sectorSize).coerceAtLeast(0x10000L).toInt())
 
         // --- LBA1: GPT header ---
         val header = sectorSize
