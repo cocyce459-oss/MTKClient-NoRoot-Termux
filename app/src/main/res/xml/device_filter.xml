@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    USB device filter for the USB_DEVICE_ATTACHED intent.
+
+    Matching one of these lets Android offer to open MTKClient Native the moment
+    the target is plugged in, and implicitly grants USB permission when the user
+    accepts. That removes the timing race the Termux bridge could never fix:
+    BROM's watchdog gives you roughly three seconds, and `termux-usb` showed its
+    popup *after* the countdown had already started.
+
+    vendor-id / product-id are DECIMAL, as required by this resource format.
+    Ported from mtkclient/config/usb_ids.py (default_ids).
+-->
+<resources>
+    <!-- MediaTek -->
+    <usb-device vendor-id="3725" product-id="3" />     <!-- 0E8D:0003 BROM -->
+    <usb-device vendor-id="3725" product-id="8192" />  <!-- 0E8D:2000 Preloader -->
+    <usb-device vendor-id="3725" product-id="8193" />  <!-- 0E8D:2001 Preloader -->
+    <usb-device vendor-id="3725" product-id="8447" />  <!-- 0E8D:20FF Preloader -->
+    <usb-device vendor-id="3725" product-id="12288" /> <!-- 0E8D:3000 Preloader -->
+    <usb-device vendor-id="3725" product-id="24576" /> <!-- 0E8D:6000 Preloader -->
+
+    <!-- LG -->
+    <usb-device vendor-id="4100" product-id="24576" /> <!-- 1004:6000 Preloader -->
+
+    <!-- OPPO -->
+    <usb-device vendor-id="8921" product-id="6" />     <!-- 22D9:0006 Preloader -->
+
+    <!-- Sony -->
+    <usb-device vendor-id="4046" product-id="53725" /> <!-- 0FCE:D1DD F3111 -->
+    <usb-device vendor-id="4046" product-id="53730" /> <!-- 0FCE:D1E2 BROM -->
+    <usb-device vendor-id="4046" product-id="53737" /> <!-- 0FCE:D1E9 BROM XA1 -->
+    <usb-device vendor-id="4046" product-id="53740" /> <!-- 0FCE:D1EC BROM L1 -->
+    <usb-device vendor-id="4046" product-id="61952" /> <!-- 0FCE:F200 BROM -->
+</resources>

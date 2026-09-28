@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MTKClient Native</string>
+
+    <!-- Status strip -->
+    <string name="status_idle">Not connected</string>
+    <string name="status_scanning">Scanning for device…</string>
+    <string name="status_permission">Waiting for USB permission (%1$s)</string>
+    <string name="status_failed">Failed: %1$s</string>
+    <string name="status_connected_dot">Connected</string>
+
+    <!-- Device tab -->
+    <string name="connect">Scan &amp; connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="reboot">Reboot device</string>
+    <string name="device_identity">Device identity</string>
+    <string name="label_chip">SoC</string>
+    <string name="label_hwcode">hwcode</string>
+    <string name="label_usb_id">USB ID</string>
+    <string name="label_mode">Mode</string>
+    <string name="mode_brom">BROM</string>
+    <string name="mode_preloader">Preloader</string>
+    <string name="engine_log">Engine log</string>
+    <string name="clear_log">Clear</string>
+    <string name="memory_read">Read memory</string>
+    <string name="hint_address">Address (e.g. 0x8000000)</string>
+    <string name="hint_length">Length (e.g. 0x100)</string>
+    <string name="mem_read">Read</string>
+    <string name="error_fields_required">Both address and length are required</string>
+
+    <string name="reboot_title">Reboot the target device?</string>
+    <string name="reboot_message">This sends the BROM reboot command. Any operation in progress on the target will be interrupted.</string>
+    <string name="reboot_confirm">Reboot</string>
+    <string name="cancel">Cancel</string>
+
+    <!-- Partitions tab -->
+    <string name="refresh">Read partition table</string>
+    <string name="partitions_empty">No partition table loaded yet.\n\nConnect a device, then tap “Read partition table”.\nThis is a read-only operation.</string>
+    <string name="dump">Dump</string>
+    <string name="dump_title">Dump “%1$s”?</string>
+    <string name="dump_message">The partition is read from flash and saved to the app\'s documents folder. Reading does not modify the device.</string>
+    <string name="dump_confirm">Dump</string>
+    <plurals name="partition_count">
+        <item quantity="one">%d partition</item>
+        <item quantity="other">%d partitions</item>
+    </plurals>
+
+    <!-- Console tab -->
+    <string name="console_hint">mtk command (e.g. printgpt)</string>
+    <string name="send">Run</string>
+    <string name="chip_printgpt">printgpt</string>
+    <string name="chip_info">info</string>
+    <string name="chip_help">help</string>
+    <string name="chip_ls">ls</string>
+    <string name="console_welcome">MTKClient Native console.\nType \'help\' for commands.\n</string>
+
+    <!-- Warnings -->
+    <string name="warning_banner">BROM mode gives direct access to flash and memory. Read-only commands are safe; memwrite and reboot are not. Use at your own risk.</string>
+
+    <!-- ViewModel / engine feedback. These are surfaced in the log pane and the
+         console, so they read as sentences rather than labels. -->
+    <string name="saved_to">Saved to %1$s</string>
+    <string name="output_dir">Output directory: %1$s</string>
+    <string name="found_partitions">Found %1$d partitions</string>
+    <string name="gpt_not_found">No valid GPT header in the range that was read.</string>
+    <string name="busy_wait">Another operation is already running — wait for it to finish.</string>
+    <string name="not_connected">Not connected. Plug the device in while it is in BROM mode, then press Connect.</string>
+    <string name="permission_denied_hint">USB permission was denied. Replug the device and accept the system prompt.</string>
+    <string name="memread_invalid">Address and length must be numbers, e.g. 0x100000 and 0x4000.</string>
+    <string name="dumped_bytes">Dumped %1$s to %2$s</string>
+    <string name="wrote_bytes">Wrote %1$d bytes to %2$s</string>
+    <!-- Worded without apostrophes on purpose: a raw ' in an Android string
+         resource is a hard aapt2 error, and escaping it as \' is easy to lose to
+         a generator or a shell heredoc. Same reason there are no bare quotes. -->
+    <string name="partition_dump_failed">No partition named %1$s in the current table. Run printgpt first.</string>
+</resources>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="mtk_primary">#FF3F67D0</color>
+    <color name="mtk_on_primary">#FFFFFFFF</color>
+    <color name="mtk_primary_container">#FFDCE3FF</color>
+    <color name="mtk_on_primary_container">#FF001A43</color>
+    <color name="mtk_secondary">#FF5A5D72</color>
+    <color name="mtk_error">#FFB3261E</color>
+
+    <color name="status_idle">#FF9E9E9E</color>
+    <color name="status_busy">#FFF9A825</color>
+    <color name="status_connected">#FF2E7D32</color>
+    <color name="status_error">#FFC62828</color>
+
+    <color name="ic_launcher_background">#FF12161F</color>
+</resources>

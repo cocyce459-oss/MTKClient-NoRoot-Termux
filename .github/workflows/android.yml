@@ -1,0 +1,290 @@
+name: Build APK
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# The MediaTek Download Agent binaries are fetched at build time rather than
+# committed, so give the build room and cache them between runs.
+env:
+  GRADLE_VERSION: "8.9"
+
+# `contents: write` lets a failed build post its own Gradle errors as a commit
+# comment. That is not vanity: the runner's log and artifact hosts sit on
+# separate domains that are not reachable from every review environment, while
+# commit comments are served by the ordinary API. Without this, a red build is
+# un-diagnosable from outside the GitHub web UI.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build:
+    name: Unit tests + release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Ensure Android SDK packages
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null
+          sdkmanager --list_installed 2>/dev/null | head -20 || true
+
+      # The ~48 MB of DA binaries are vendored into the APK, not into git.
+      # Cache the download so repeat builds do not refetch it.
+      - name: Cache vendored MediaTek assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/build/mtkclient-src
+            app/build/mtkclient-main.tar.gz
+          key: mtk-assets-${{ hashFiles('app/build.gradle.kts') }}
+          restore-keys: mtk-assets-
+
+      # Errors are mirrored into the job summary on purpose: the runner's log and
+      # artifact hosts are not always reachable from a review environment, while
+      # the summary is retrievable through the ordinary API.
+      - name: Run unit tests (includes BROM golden-vector replay)
+        run: |
+          set +e
+          {
+            echo "=== environment diagnostics ==="
+            echo "gradle: $(command -v gradle || echo MISSING)"
+            gradle --version 2>&1 | head -12
+            echo "java: $(java -version 2>&1 | head -1)"
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            ls -d "$ANDROID_HOME"/platforms/* "$ANDROID_HOME"/build-tools/* 2>&1 | head
+            echo "wrapper properties:"
+            cat gradle/wrapper/gradle-wrapper.properties 2>&1
+            echo "wrapper jar present: $(test -f gradle/wrapper/gradle-wrapper.jar && echo yes || echo no)"
+            echo "==============================="
+          } 2>&1 | tee /tmp/gradle-test.log
+          gradle :app:testDebugUnitTest --stacktrace --no-daemon 2>&1 | tee -a /tmp/gradle-test.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            {
+              echo "### :x: Unit tests or Kotlin compilation failed"
+              echo
+              echo '```'
+              grep -E "^e: |error:|FAILURE:|What went wrong|Caused by:|Execution failed for task|> Task .* FAILED" /tmp/gradle-test.log | head -120
+              echo '```'
+              echo
+              echo "<details><summary>tail of the Gradle output</summary>"
+              echo
+              echo '```'
+              tail -n 150 /tmp/gradle-test.log
+              echo '```'
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
+
+      - name: Publish test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
+
+      - name: Materialise a release signing key (if secrets present)
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MTK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.MTK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.MTK_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.MTK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "MTK_KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "MTK_KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}" >> "$GITHUB_ENV"
+            echo "MTK_KEY_ALIAS=${KEY_ALIAS}" >> "$GITHUB_ENV"
+            echo "MTK_KEY_PASSWORD=${KEY_PASSWORD}" >> "$GITHUB_ENV"
+            echo "signed=released" >> "$GITHUB_OUTPUT"
+            echo "Using the release keystore from repository secrets."
+          else
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+            echo "No signing secrets configured; falling back to the CI debug key."
+            echo "The APK is installable, but not uploadable to Play."
+          fi
+
+      - name: Assemble release APK
+        run: |
+          set +e
+          gradle :app:assembleRelease --stacktrace --no-daemon 2>&1 | tee /tmp/gradle-assemble.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            {
+              echo "### :x: assembleRelease failed"
+              echo
+              echo '```'
+              grep -E "^e: |error:|FAILURE:|What went wrong|Caused by:|Execution failed for task|> Task .* FAILED" /tmp/gradle-assemble.log | head -120
+              echo '```'
+              echo
+              echo "<details><summary>tail of the Gradle output</summary>"
+              echo
+              echo '```'
+              tail -n 150 /tmp/gradle-assemble.log
+              echo '```'
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
+
+      - name: Report APK size
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          ls -la "$APK"
+          SIZE=$(stat -c%s "$APK")
+          echo "### APK size" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$(numfmt --to=iec "$SIZE")\` ($SIZE bytes) — signed with the ${{ steps.signing.outputs.signed }} key" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Asset breakdown:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          unzip -l "$APK" | awk '{print $1, $4}' | grep -E 'assets/|classes|resources|\.so' | head -20 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTKClient-Native-release
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/release/app-release.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      # Posts the actual failure text as a commit comment. Job summaries and log
+      # archives both live on hosts that are not reachable from every review
+      # environment; commit comments are served by the ordinary API, so a red
+      # build stays diagnosable without opening the web UI.
+      #
+      # Failing test names and stack traces come from Gradle's own console output,
+      # enabled by the testLogging block in app/build.gradle.kts. Parsing the JUnit
+      # XML here instead would need a heredoc, and a heredoc body has to start at
+      # column 0, which terminates the YAML block scalar this script lives in.
+      - name: Report failure details as a commit comment
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG=/tmp/gradle-test.log
+          [ -f /tmp/gradle-assemble.log ] && LOG=/tmp/gradle-assemble.log
+          if [ ! -f "$LOG" ]; then
+            echo "No Gradle log captured; the job failed before the build started."
+            exit 0
+          fi
+          {
+            echo "### :x: ${GITHUB_JOB} failed on ${GITHUB_REF_NAME}"
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "#### Failing tests (with Gradle context)"
+            echo
+            echo '```'
+            grep -B 2 -A 18 -E "^[^ ].* FAILED$" "$LOG" | head -200 || echo "(no per-test FAILED lines; see below)"
+            echo '```'
+            echo
+            echo "#### Matched error lines"
+            echo
+            echo '```'
+            grep -E "^e: |error:|FAILURE:|What went wrong|Caused by:|Execution failed for task|> Task .* FAILED|Could not (resolve|find)|A problem occurred|AssertionError|ComparisonFailure|expected:" "$LOG" | head -120
+            echo '```'
+            echo
+            echo "#### Environment diagnostics"
+            echo
+            echo '```'
+            sed -n '/=== environment diagnostics ===/,/===============================/p' "$LOG"
+            echo '```'
+            echo
+            echo "#### Tail of output"
+            echo
+            echo '```'
+            tail -n 250 "$LOG"
+            echo '```'
+          } > /tmp/failure-report.md
+          wc -c /tmp/failure-report.md
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" \
+            -f body="$(cat /tmp/failure-report.md)" > /dev/null \
+            && echo "Posted failure report as a commit comment." \
+            || echo "Could not post commit comment (token permissions?)."
+
+  # Independent check that the committed golden vectors still match upstream.
+  # If bkerler/mtkclient changes the BROM wire protocol this fails loudly, which
+  # is the signal to re-record and re-verify the Kotlin port.
+  protocol-drift:
+    name: Verify golden vectors vs upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install reference dependencies
+        run: pip install --quiet pyusb pycryptodome pycryptodomex colorama
+
+      - name: Fetch upstream mtkclient
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/mtkclient.tar.gz \
+            https://codeload.github.com/bkerler/mtkclient/tar.gz/refs/heads/main
+          mkdir -p /tmp/mtksrc
+          tar xzf /tmp/mtkclient.tar.gz -C /tmp/mtksrc
+          echo "MTK_SRC=$(find /tmp/mtksrc -maxdepth 1 -mindepth 1 -type d | head -1)" >> "$GITHUB_ENV"
+
+      - name: Re-record vectors and compare
+        run: |
+          set -euo pipefail
+          python3 tools/golden_vectors.py "$MTK_SRC" /tmp/regen.json
+          python3 - <<'PY'
+          import json, sys
+          committed = json.load(open("app/src/test/resources/golden_vectors.json"))
+          regenerated = json.load(open("/tmp/regen.json"))
+          if committed == regenerated:
+              print("Golden vectors still match upstream — the port is current.")
+              sys.exit(0)
+          print("::warning::Golden vectors drifted from upstream mtkclient.")
+          for key in sorted(set(committed) | set(regenerated)):
+              if committed.get(key) != regenerated.get(key):
+                  print("  drifted:", key)
+                  print("    committed  :", committed.get(key))
+                  print("    regenerated:", regenerated.get(key))
+          sys.exit(1)
+          PY
