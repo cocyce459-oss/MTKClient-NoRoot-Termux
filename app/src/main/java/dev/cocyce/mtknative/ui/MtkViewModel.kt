@@ -59,8 +59,11 @@ class MtkViewModel(private val app: Application) : AndroidViewModel(app) {
             this@MtkViewModel.onLog(level, message)
         }
 
-        override fun onProgress(current: Long, total: Long, label: String) {
-            _progress.postValue(if (total <= 0L) null else Progress(current, total, label))
+        // Parameter order must match EngineListener.onProgress(label, done, total)
+        // exactly: Kotlin matches overrides by signature, so a reordered list
+        // silently "overrides nothing" rather than adapting.
+        override fun onProgress(label: String, done: Long, total: Long) {
+            _progress.postValue(if (total <= 0L) null else Progress(done, total, label))
         }
     }
 
@@ -330,7 +333,18 @@ sealed class ConnectionState {
 
 data class LogLine(val timestamp: String, val level: LogLevel, val message: String)
 
+/**
+ * Bulk-transfer progress for the status bar.
+ *
+ * [current]/[total] are byte counts. [text] and [fraction] exist so the view layer
+ * renders progress without reimplementing the arithmetic — `MainActivity` binds
+ * `progress.text` straight to a TextView and drives the indicator from `fraction`.
+ */
 data class Progress(val current: Long, val total: Long, val label: String) {
     val fraction: Float
         get() = if (total <= 0L) 0f else (current.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+
+    /** One-line rendering; falls back to the bare label when total is unknown. */
+    val text: String
+        get() = if (total > 0L) "$label — ${(fraction * 100).toInt()}%" else label
 }
