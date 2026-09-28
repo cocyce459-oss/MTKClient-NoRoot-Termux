@@ -1,227 +1,156 @@
-# MTKClient-NoRoot-Termux
+# MTKClient Native
 
 > [!CAUTION]
-> **WARNING: This tool deals with low-level device partitions. Incorrect usage can permanently HARD BRICK your device. This tool is currently in BETA TESTING. I am not responsible for any damages.**
+> **This tool reads and writes low-level device partitions. `memwrite` and
+> `reboot` modify the target. Incorrect use can permanently hard-brick a device.
+> Nothing here is responsible for that. Read-only commands (`printgpt`,
+> `memread`, `r`, `preloader`, `rpmb`, `data`, `boot2`) do not modify anything.**
 
-**Fixed fork:** Termux USB permission popup now works reliably. The first fully functional MTKClient for Termux that works WITHOUT ROOT. Optimized 'Sniper' script for catching BROM/Preloader VCOM ports on unrooted Android devices via OTG.
+A **native Android APK** for talking to MediaTek devices in BROM mode over
+USB-OTG. No root, no Termux, no Python, no libusb, no compiler toolchain — and no
+gigabytes of runtime to install first.
 
-## ✅ What's Fixed in This Fork
+This repository began as a Termux bridge script. It is now an Android app; the
+bridge is archived under [`legacy-termux/`](legacy-termux/) and
+[docs/MIGRATION.md](docs/MIGRATION.md) explains the move.
 
-- **USB Permission Popup Now Works:** The script no longer tries to launch the non-existent `mtk_main.py`. It properly requests Termux USB permissions and directly executes `stage2.py`.
-- **Proper Environment Passing:** The `TERMUX_USB_FD` environment variable is correctly passed to the MTK client after permission is granted.
-- **Better Device Detection:** Scans `/dev/bus/usb` reliably with validation and retry logic (60-second timeout).
-- **Clear User Feedback:** Better messages tell you exactly what's happening and what to do.
-- **Safe Command Testing:** Use `printgpt` to safely verify your device connection without risk of data loss.
+## Why
 
----
+The old approach wrapped a desktop toolchain around a protocol that is only a few
+hundred lines of logic. Nearly everything it installed existed to *host* that
+logic rather than perform it:
 
-## Key Details
+| Termux setup | Approx. size | Native equivalent |
+|---|---|---|
+| `clang`, `binutils`, LLVM | 1.5 – 2.5 GB | nothing to compile |
+| Python + venv + pip deps | 0.7 – 1.5 GB | Kotlin, already in the APK |
+| `libusb` + Termux:API | ~10 MB | `android.hardware.usb` (in the OS) |
+| mtkclient checkout | 60 MB | 9.6 KB generated chip table |
+| **Total** | **~2 – 4 GB** | **~30 MB APK** (~2–3 MB slim) |
 
-- **Zero Root Required:** Unlike the original mtkclient, this version is designed to run in a standard Termux environment without root access.
-- **Optimized for Mobile:** All GUI, Windows-specific, and non-essential files have been stripped to keep the script small and fast.
-- **Enhanced Connection:** Features a custom polling loop that looks for USB devices thousands of times per second to overcome Android's single-look limitation.
+Measured, not estimated — see [docs/BUILDING.md](docs/BUILDING.md#resulting-sizes):
 
----
+| Build | Bundled assets (deflated) | APK |
+|---|---|---|
+| Full | 27.68 MB | **~30 MB** |
+| Slim (`-PslimAssets=true`) | 0.09 MB | **~2–3 MB** |
 
-## Quick Start (5 Minutes)
+## Get the APK
 
-### 1. Install Prerequisites
-
-```bash
-pkg update && pkg upgrade -y
-pkg install python git termux-api libusb clang binutils -y
-```
-
-**Important:** Install **Termux:api** from [F-Droid](https://f-droid.org/repo/com.termux.api_1002.apk) or [GitHub](https://github.com/termux/termux-api-package/releases), **NOT** from the Play Store.
-
-### 2. Clone and Setup
-
-```bash
-python3 -m venv ~/.venv
-git clone https://github.com/cocyce459-oss/MTKClient-NoRoot-Termux
-cd MTKClient-NoRoot-Termux
-. ~/.venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Test Connection (Safe & Non-Destructive)
-
-**Before doing anything risky, test that your device connects properly:**
+Push any branch, or run the workflow manually:
 
 ```bash
-# Check for USB devices
-termux-usb -l
-
-# Power off your target phone completely
-# Hold BOTH volume buttons on the target phone
-# Connect it to the host phone via USB/OTG (while holding volume buttons)
-
-# Run this command to print the device partition table (READ-ONLY, SAFE)
-python3 mtk.py printgpt
+gh workflow run "Build APK"
+gh run download --name MTKClient-Native-release
+adb install -r app-release.apk
 ```
 
-**What to expect:**
-1. Terminal will print: `[*] Waiting for device in BROM mode...`
-2. Device will be detected: `[+] Found USB device: /dev/bus/usb/...`
-3. A **Termux API popup** will appear on screen
-4. **Quickly press "OK"** in the popup (you have ~3 seconds before the device times out)
-5. If successful, you'll see the partition table printed to terminal
-6. If it fails, try again — timing is critical
+The workflow runs the tests first, so an artifact only exists if the protocol
+vectors passed. Pushing a `v*` tag publishes a GitHub Release with the APK.
+Building locally instead: [docs/BUILDING.md](docs/BUILDING.md).
 
-**If the popup doesn't appear:**
-- Ensure Termux:api is installed (from F-Droid, not Play Store)
-- Grant USB permission: Open Termux Settings → Permissions → USB → Toggle ON
-- Restart Termux and try again
+The app requests **no permissions**. Dumps land in app-specific external storage,
+and USB host access needs no manifest permission at all.
 
----
+## Use it
 
-## How to Use
+1. Power the target phone **off**.
+2. Hold **both volume keys** and connect it to the host phone with a USB-OTG cable.
+3. Android offers to open MTKClient Native — accept. That grants USB permission
+   *before* BROM is contacted, so there is no countdown to lose.
+4. In the **Partitions** tab, tap *Read partition table*. That is `printgpt`, and
+   it is read-only.
+5. Tap any partition to dump it.
 
-### General Syntax
+Already have the app open? Use **Device → Scan & connect**, or the **Console** tab:
+
+```
+printgpt
+info
+r boot,vbmeta boot.img,vbmeta.img
+memread 0x0 0x100
+preloader
+ls
+help
+```
+
+Console syntax matches upstream `mtkclient`, and numbers accept decimal or `0x`
+hex exactly as `stage2.py`'s `getint()` did.
+
+## What works, and what does not
+
+This build drives MediaTek's **BROM** backdoor interface directly. That needs no
+exploit payload and no Download Agent — which is precisely why the app can be
+30 MB instead of 4 GB.
+
+**Works:** partition table, memory read/write, raw dumps of user / boot1 / boot2
+/ RPMB, preloader extraction, chip identification, reboot.
+
+**Does not work, and says so:** `w`, `e`, `daa`, `oem` — flashing, erasing and
+bootloader unlock all require the Download Agent protocols (xflash / xmlflash /
+legacy) and, on secured chips, an SLA/DAA bypass. That is the bulk of upstream's
+29,000 lines and is out of scope here.
+
+The console rejects those commands with an explanation rather than pretending to
+succeed. A tool that claims to have unlocked a bootloader when it has not is
+worse than one that refuses.
+
+## Correctness
+
+The riskiest part of this port is the wire protocol: get a byte order or a chunk
+boundary wrong and you are writing to the wrong address on someone's phone. So it
+is not verified against a re-derivation of the protocol — it is verified against
+the reference implementation itself.
+
+[`tools/golden_vectors.py`](tools/golden_vectors.py) monkeypatches
+`usbwrite`/`usbread` on the real `Stage2` class from bkerler/mtkclient and
+records, for 17 operations, the exact bytes transmitted, **the boundary of every
+individual transfer**, and the length of every read requested. Those recordings
+are committed as `app/src/test/resources/golden_vectors.json`, and
+`BromProtocolVectorTest` replays each operation through the Kotlin
+`BromProtocol` and asserts all three match.
+
+Frame boundaries are compared because identical bytes sent in different chunk
+sizes would still be wrong on real hardware. CI re-records from upstream on every
+push, so a future protocol change surfaces as a named failure.
 
 ```bash
-python3 mtk.py <command> [options]
+gradle :app:testDebugUnitTest --tests '*BromProtocolVectorTest*'
 ```
 
-### Safe Testing Commands (No Risk of Data Loss)
+## Layout
 
-```bash
-# Print partition table (READ-ONLY) — USE THIS TO TEST FIRST
-python3 mtk.py printgpt
-
-# Read device info (READ-ONLY)
-python3 mtk.py memread 0x0 0x100
+```
+app/src/main/java/dev/cocyce/mtknative/
+  brom/     BromProtocol, WireFormat, Wire, BromOpcodes   the protocol
+  usb/      MtkUsbTransport, UsbPermissionManager, MtkDeviceFilter
+  engine/   MtkEngine, MtkSession, BrlytScanner           operations
+  gpt/      GptParser                                     pure logic
+  chip/     ChipDatabase                                  generated, do not edit
+  console/  ConsoleShell, ConsoleParser                   mtk.py syntax
+  ui/       MainActivity, fragments, MtkViewModel         Material 3
+tools/      golden_vectors.py, generate_chipdb.py         verification + codegen
+docs/       PROTOCOL, ARCHITECTURE, BUILDING, MIGRATION
+legacy-termux/                                            archived bridge
 ```
 
-### Common Operations
+Dependencies point strictly downward, and `brom/Wire` is the seam that lets the
+protocol be tested on a desktop JVM with no Android runtime and no device.
+`gpt/`, `chip/`, `console/ConsoleParser`, `engine/BrlytScanner` and all of `brom/`
+import no `android.*` types at all. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-#### Dump Boot and VBMeta
+## Documentation
 
-```bash
-python3 mtk.py r boot,vbmeta boot.img,vbmeta.img
-```
+- [docs/PROTOCOL.md](docs/PROTOCOL.md) — the BROM wire format, opcodes, chunking rules, device IDs
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layering, what was removed and why, the permission fix
+- [docs/BUILDING.md](docs/BUILDING.md) — CI and local builds, signing, asset vendoring, sizes
+- [docs/MIGRATION.md](docs/MIGRATION.md) — command-by-command mapping from the Termux bridge
 
-#### Unlock Bootloader
+## Licence
 
-```bash
-python3 mtk.py e metadata,userdata,md_udc
-python3 mtk.py daa seccfg unlock
-```
-
-#### Lock Bootloader
-
-```bash
-python3 mtk.py oem lock
-```
-
-#### Flash Boot (for rooting)
-
-```bash
-python3 mtk.py w boot patched_boot.img
-```
-
-#### Read GPT Table
-
-```bash
-python3 mtk.py printgpt
-```
-
-#### Erase Userdata (Factory Reset)
-
-```bash
-python3 mtk.py e userdata
-```
-
----
-
-## Flags Reference
-
-### Type 1 Flags (After Command)
-
-**Format:** `python3 mtk.py [command] --[flag]`
-
-| Flag | Purpose |
-|------|---------|
-| `--force` | Bypass signature or size mismatches to force a flash |
-| `--reset` | Reboot device normally after process completes |
-| `--skip [partition]` | Ignore a specific partition during bulk read/write |
-
-### Type 2 Flags (Before Command)
-
-**Format:** `python3 mtk.py --[flag] [command]`
-
-| Flag | Purpose |
-|------|---------|
-| `--nobatt` | For devices that require connection without battery to trigger BROM |
-| `--stage2` | Force the SLA/DAA bypass payload for newer, secured MediaTek chipsets |
-| `--debugmode` | Provide full log of the connection process (for debugging failures) |
-
-**Example:**
-```bash
-python3 mtk.py --debugmode printgpt
-```
-
----
-
-## Troubleshooting
-
-### "Device is recognized but won't connect"
-
-This was the original issue in the upstream repository. **This fork fixes it.** If you still experience this:
-
-1. Ensure Termux:api is from F-Droid, not Play Store
-2. Check USB permission: `termux-usb -l` should show `/dev/bus/usb/...` entries
-3. Try with `--debugmode` to see full logs:
-   ```bash
-   python3 mtk.py --debugmode printgpt
-   ```
-
-### "No popup appears when connecting device"
-
-- Restart Termux
-- Go to Termux Settings → Permissions → Grant USB permission manually
-- Try again
-
-### "Device times out after 3 seconds"
-
-- Timing is critical. Practice holding the volume buttons while connecting
-- Some devices need you to hold power + volume buttons simultaneously
-- Refer to your device's BROM/EDL mode documentation
-
-### "Command fails with error about mtkclient"
-
-Ensure all files are present:
-```bash
-ls -la mtkclient/
-ls -la mtkclient/Loader/
-```
-
-If directories are empty, you may need to pull the complete mtkclient library files separately.
-
----
-
-## Version History
-
-### v2.1.4-fixed (This Fork)
-- ✅ Fixed Termux USB permission popup handling
-- ✅ Corrected script execution path (no more `mtk_main.py` error)
-- ✅ Added proper `TERMUX_USB_FD` environment variable passing
-- ✅ Improved device scanning and retry logic
-- ✅ Enhanced error messages and user guidance
-
-### v2.1.4 (Original)
-- Initial release with USB bridge support
-
----
-
-## For Suggestions and Bug Reports
-
-Contact: **sameenataj427@gmail.com**
-
-Or open an issue on this fork: https://github.com/cocyce459-oss/MTKClient-NoRoot-Termux/issues
-
----
-
-## License
-
-GNU General Public License v3.0 — See LICENSE file for details.
+GPL-3.0 — see [LICENSE](LICENSE). This is a derivative of
+[bkerler/mtkclient](https://github.com/bkerler/mtkclient) (GPL-3.0, © B. Kerler
+2018–2025); the protocol, chip data and asset vendoring all originate there. The
+MediaTek Download Agent binaries fetched at build time remain the property of
+MediaTek and are not redistributed in this repository.

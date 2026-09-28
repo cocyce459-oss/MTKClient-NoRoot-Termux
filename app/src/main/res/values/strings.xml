@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MTKClient Native</string>
+
+    <!-- Status strip -->
+    <string name="status_idle">Not connected</string>
+    <string name="status_scanning">Scanning for device…</string>
+    <string name="status_permission">Waiting for USB permission (%1$s)</string>
+    <string name="status_failed">Failed: %1$s</string>
+    <string name="status_connected_dot">Connected</string>
+
+    <!-- Device tab -->
+    <string name="connect">Scan &amp; connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="reboot">Reboot device</string>
+    <string name="device_identity">Device identity</string>
+    <string name="label_chip">SoC</string>
+    <string name="label_hwcode">hwcode</string>
+    <string name="label_usb_id">USB ID</string>
+    <string name="label_mode">Mode</string>
+    <string name="mode_brom">BROM</string>
+    <string name="mode_preloader">Preloader</string>
+    <string name="engine_log">Engine log</string>
+    <string name="clear_log">Clear</string>
+    <string name="memory_read">Read memory</string>
+    <string name="hint_address">Address (e.g. 0x8000000)</string>
+    <string name="hint_length">Length (e.g. 0x100)</string>
+    <string name="mem_read">Read</string>
+    <string name="error_fields_required">Both address and length are required</string>
+
+    <string name="reboot_title">Reboot the target device?</string>
+    <string name="reboot_message">This sends the BROM reboot command. Any operation in progress on the target will be interrupted.</string>
+    <string name="reboot_confirm">Reboot</string>
+    <string name="cancel">Cancel</string>
+
+    <!-- Partitions tab -->
+    <string name="refresh">Read partition table</string>
+    <string name="partitions_empty">No partition table loaded yet.\n\nConnect a device, then tap “Read partition table”.\nThis is a read-only operation.</string>
+    <string name="dump">Dump</string>
+    <string name="dump_title">Dump “%1$s”?</string>
+    <string name="dump_message">The partition is read from flash and saved to the app\'s documents folder. Reading does not modify the device.</string>
+    <string name="dump_confirm">Dump</string>
+    <plurals name="partition_count">
+        <item quantity="one">%d partition</item>
+        <item quantity="other">%d partitions</item>
+    </plurals>
+
+    <!-- Console tab -->
+    <string name="console_hint">mtk command (e.g. printgpt)</string>
+    <string name="send">Run</string>
+    <string name="chip_printgpt">printgpt</string>
+    <string name="chip_info">info</string>
+    <string name="chip_help">help</string>
+    <string name="chip_ls">ls</string>
+    <string name="console_welcome">MTKClient Native console.\nType \'help\' for commands.\n</string>
+
+    <!-- Warnings -->
+    <string name="warning_banner">BROM mode gives direct access to flash and memory. Read-only commands are safe; memwrite and reboot are not. Use at your own risk.</string>
+</resources>

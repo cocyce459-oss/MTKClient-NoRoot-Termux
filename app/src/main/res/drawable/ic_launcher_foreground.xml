@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- SoC package -->
+    <path android:fillColor="#FF7FA8FF"
+        android:pathData="M34,34h40v40h-40z" />
+    <path android:fillColor="#FF12161F"
+        android:pathData="M42,42h24v24h-24z" />
+    <!-- Pins -->
+    <path android:fillColor="#FF7FA8FF"
+        android:pathData="M40,26h4v8h-4z M52,26h4v8h-4z M64,26h4v8h-4z
+                          M40,74h4v8h-4z M52,74h4v8h-4z M64,74h4v8h-4z
+                          M26,40h8v4h-8z M26,52h8v4h-8z M26,64h8v4h-8z
+                          M74,40h8v4h-8z M74,52h8v4h-8z M74,64h8v4h-8z" />
+</vector>

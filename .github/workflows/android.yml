@@ -1,0 +1,169 @@
+name: Build APK
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# The MediaTek Download Agent binaries are fetched at build time rather than
+# committed, so give the build room and cache them between runs.
+env:
+  GRADLE_VERSION: "8.9"
+
+jobs:
+  build:
+    name: Unit tests + release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Ensure Android SDK packages
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null
+          sdkmanager --list_installed 2>/dev/null | head -20 || true
+
+      # The ~48 MB of DA binaries are vendored into the APK, not into git.
+      # Cache the download so repeat builds do not refetch it.
+      - name: Cache vendored MediaTek assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/build/mtkclient-src
+            app/build/mtkclient-main.tar.gz
+          key: mtk-assets-${{ hashFiles('app/build.gradle.kts') }}
+          restore-keys: mtk-assets-
+
+      - name: Run unit tests (includes BROM golden-vector replay)
+        run: gradle :app:testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Publish test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
+
+      - name: Materialise a release signing key (if secrets present)
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MTK_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.MTK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.MTK_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.MTK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "MTK_KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "MTK_KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}" >> "$GITHUB_ENV"
+            echo "MTK_KEY_ALIAS=${KEY_ALIAS}" >> "$GITHUB_ENV"
+            echo "MTK_KEY_PASSWORD=${KEY_PASSWORD}" >> "$GITHUB_ENV"
+            echo "signed=released" >> "$GITHUB_OUTPUT"
+            echo "Using the release keystore from repository secrets."
+          else
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+            echo "No signing secrets configured; falling back to the CI debug key."
+            echo "The APK is installable, but not uploadable to Play."
+          fi
+
+      - name: Assemble release APK
+        run: gradle :app:assembleRelease --stacktrace --no-daemon
+
+      - name: Report APK size
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          ls -la "$APK"
+          SIZE=$(stat -c%s "$APK")
+          echo "### APK size" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$(numfmt --to=iec "$SIZE")\` ($SIZE bytes) — signed with the ${{ steps.signing.outputs.signed }} key" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Asset breakdown:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          unzip -l "$APK" | awk '{print $1, $4}' | grep -E 'assets/|classes|resources|\.so' | head -20 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTKClient-Native-release
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/release/app-release.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  # Independent check that the committed golden vectors still match upstream.
+  # If bkerler/mtkclient changes the BROM wire protocol this fails loudly, which
+  # is the signal to re-record and re-verify the Kotlin port.
+  protocol-drift:
+    name: Verify golden vectors vs upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install reference dependencies
+        run: pip install --quiet pyusb pycryptodome pycryptodomex colorama
+
+      - name: Fetch upstream mtkclient
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/mtkclient.tar.gz \
+            https://codeload.github.com/bkerler/mtkclient/tar.gz/refs/heads/main
+          mkdir -p /tmp/mtksrc
+          tar xzf /tmp/mtkclient.tar.gz -C /tmp/mtksrc
+          echo "MTK_SRC=$(find /tmp/mtksrc -maxdepth 1 -mindepth 1 -type d | head -1)" >> "$GITHUB_ENV"
+
+      - name: Re-record vectors and compare
+        run: |
+          set -euo pipefail
+          python3 tools/golden_vectors.py "$MTK_SRC" /tmp/regen.json
+          python3 - <<'PY'
+          import json, sys
+          committed = json.load(open("app/src/test/resources/golden_vectors.json"))
+          regenerated = json.load(open("/tmp/regen.json"))
+          if committed == regenerated:
+              print("Golden vectors still match upstream — the port is current.")
+              sys.exit(0)
+          print("::warning::Golden vectors drifted from upstream mtkclient.")
+          for key in sorted(set(committed) | set(regenerated)):
+              if committed.get(key) != regenerated.get(key):
+                  print("  drifted:", key)
+                  print("    committed  :", committed.get(key))
+                  print("    regenerated:", regenerated.get(key))
+          sys.exit(1)
+          PY

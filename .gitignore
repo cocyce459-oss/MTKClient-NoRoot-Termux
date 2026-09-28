@@ -1,0 +1,32 @@
+# --- Gradle / Android build output ---
+.gradle/
+build/
+app/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# --- APK / signing artefacts (never commit keys) ---
+*.apk
+*.aab
+*.ap_
+*.dex
+*.keystore
+*.jks
+!gradle/wrapper/gradle-wrapper.jar
+
+# --- Vendored MediaTek binaries (fetched at build time, ~48 MB) ---
+app/build/generated/mtkAssets/
+vendor/mtkclient/
+
+# --- IDE ---
+.idea/
+*.iml
+.DS_Store
+
+# --- Python tooling (verification harness) ---
+__pycache__/
+*.pyc
+.venv/
+venv/
