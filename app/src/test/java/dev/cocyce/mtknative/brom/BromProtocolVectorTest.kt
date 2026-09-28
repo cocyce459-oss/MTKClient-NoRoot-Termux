@@ -193,11 +193,16 @@ class BromProtocolVectorTest {
 
         op(brom)
 
+        // Hex case carries no information, so every comparison normalises to
+        // lower case: the vectors were recorded with Python's bytes.hex(), while
+        // WireFormat.toHex() emits upper case for readability in the console tab.
+        // The `tx` assertion already did this; `tx_frames` did not, which made all
+        // 17 vector tests fail on case alone despite byte-identical output.
         assertEquals("$name: transmitted bytes", expected.getString("tx"), wire.tx.lowercase())
         assertEquals(
             "$name: frame boundaries",
-            expected.getJSONArray("tx_frames").toStringList(),
-            wire.frames
+            expected.getJSONArray("tx_frames").toStringList().map { it.lowercase() },
+            wire.frames.map { it.lowercase() }
         )
         assertEquals(
             "$name: requested read lengths",
