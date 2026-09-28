@@ -56,4 +56,18 @@
 
     <!-- Warnings -->
     <string name="warning_banner">BROM mode gives direct access to flash and memory. Read-only commands are safe; memwrite and reboot are not. Use at your own risk.</string>
+
+    <!-- ViewModel / engine feedback. These are surfaced in the log pane and the
+         console, so they read as sentences rather than labels. -->
+    <string name="saved_to">Saved to %1$s</string>
+    <string name="output_dir">Output directory: %1$s</string>
+    <string name="found_partitions">Found %1$d partitions</string>
+    <string name="gpt_not_found">No valid GPT header in the range that was read.</string>
+    <string name="busy_wait">Another operation is already running — wait for it to finish.</string>
+    <string name="not_connected">Not connected. Plug the device in while it is in BROM mode, then press Connect.</string>
+    <string name="permission_denied_hint">USB permission was denied. Replug the device and accept the system prompt.</string>
+    <string name="memread_invalid">Address and length must be numbers, e.g. 0x100000 and 0x4000.</string>
+    <string name="dumped_bytes">Dumped %1$s to %2$s</string>
+    <string name="wrote_bytes">Wrote %1$d bytes to %2$s</string>
+    <string name="partition_dump_failed">Partition '%1$s' is not in the current table — run printgpt first.</string>
 </resources>

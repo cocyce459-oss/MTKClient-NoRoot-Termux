@@ -254,8 +254,10 @@ class BromProtocol(
         var block = if (start == 0L) 0L else start / RPMB_BLOCK
         if (block > 0xFFFFL) block = 0xFFFFL
 
-        val blocks = if (length == 0L) {
-            (RPMB_DEFAULT_TOTAL / RPMB_BLOCK)
+        // Both branches must be Int: the 16-bit count field and beU16() are
+        // Int-typed, and a Long/Int mix here infers a common supertype.
+        val blocks: Int = if (length == 0L) {
+            RPMB_DEFAULT_BLOCKS
         } else {
             sectorsFor(length, RPMB_BLOCK)
         }
@@ -317,7 +319,11 @@ class BromProtocol(
         /** `0xD1D1D1D1` as a signed Kotlin Int, the eMMC "ready" reply. */
         val EMMC_READY_WORD: Int = 0xD1D1D1D1.toInt()
 
-        /** RPMB dump size used when the caller passes length 0 (16 MiB). */
-        const val RPMB_DEFAULT_TOTAL = 16L * 1024 * 1024
+        /**
+         * RPMB dump size used when the caller passes length 0: 16 MiB expressed
+         * in blocks. Intentionally Int, since the protocol's count field is
+         * 16-bit and 65536 blocks is exactly its ceiling.
+         */
+        const val RPMB_DEFAULT_BLOCKS: Int = 16 * 1024 * 1024 / BromOpcodes.RPMB_BLOCK
     }
 }

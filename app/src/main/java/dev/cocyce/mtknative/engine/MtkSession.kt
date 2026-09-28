@@ -39,6 +39,16 @@ class MtkSession(
             return dir
         }
 
+    /**
+     * Invoked with a `VID:PID` label when a device has been found but permission
+     * has not been granted yet, i.e. while the system dialog is on screen.
+     *
+     * Optional: the engine works without it. The UI sets it so the status bar can
+     * distinguish "scanning" from "waiting for you to tap Allow", which otherwise
+     * look identical to the user.
+     */
+    var onPermissionWait: ((String) -> Unit)? = null
+
     /** Scans for candidate devices without requesting permission. */
     fun scan(): List<UsbDevice> = permissions.connectedDevices()
 
@@ -59,7 +69,12 @@ class MtkSession(
 
         listener.onLog(LogLevel.INFO, "Waiting for a MediaTek device in BROM mode…")
         val device = permissions.awaitPermittedDevice(timeoutMs) { found ->
-            listener.onLog(LogLevel.DEBUG, "Detected ${found.vendorId}:${found.productId}")
+            val label = "%04X:%04X".format(found.vendorId, found.productId)
+            listener.onLog(LogLevel.DEBUG, "Detected $label")
+            if (!permissions.hasPermission(found)) {
+                listener.onLog(LogLevel.INFO, "Waiting for USB permission on $label…")
+                onPermissionWait?.invoke(label)
+            }
         }
         return open(device)
     }

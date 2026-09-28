@@ -53,8 +53,32 @@ jobs:
           key: mtk-assets-${{ hashFiles('app/build.gradle.kts') }}
           restore-keys: mtk-assets-
 
+      # Errors are mirrored into the job summary on purpose: the runner's log and
+      # artifact hosts are not always reachable from a review environment, while
+      # the summary is retrievable through the ordinary API.
       - name: Run unit tests (includes BROM golden-vector replay)
-        run: gradle :app:testDebugUnitTest --stacktrace --no-daemon
+        run: |
+          set +e
+          gradle :app:testDebugUnitTest --stacktrace --no-daemon 2>&1 | tee /tmp/gradle-test.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            {
+              echo "### :x: Unit tests or Kotlin compilation failed"
+              echo
+              echo '```'
+              grep -E "^e: |error:|FAILURE:|What went wrong|Caused by:|Execution failed for task|> Task .* FAILED" /tmp/gradle-test.log | head -120
+              echo '```'
+              echo
+              echo "<details><summary>tail of the Gradle output</summary>"
+              echo
+              echo '```'
+              tail -n 150 /tmp/gradle-test.log
+              echo '```'
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
 
       - name: Publish test report on failure
         if: failure()
@@ -88,7 +112,28 @@ jobs:
           fi
 
       - name: Assemble release APK
-        run: gradle :app:assembleRelease --stacktrace --no-daemon
+        run: |
+          set +e
+          gradle :app:assembleRelease --stacktrace --no-daemon 2>&1 | tee /tmp/gradle-assemble.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            {
+              echo "### :x: assembleRelease failed"
+              echo
+              echo '```'
+              grep -E "^e: |error:|FAILURE:|What went wrong|Caused by:|Execution failed for task|> Task .* FAILED" /tmp/gradle-assemble.log | head -120
+              echo '```'
+              echo
+              echo "<details><summary>tail of the Gradle output</summary>"
+              echo
+              echo '```'
+              tail -n 150 /tmp/gradle-assemble.log
+              echo '```'
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
 
       - name: Report APK size
         run: |

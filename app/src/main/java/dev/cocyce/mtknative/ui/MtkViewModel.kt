@@ -8,6 +8,8 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import dev.cocyce.mtknative.R
 import dev.cocyce.mtknative.brom.BromException
+import dev.cocyce.mtknative.brom.WireFormat
+import dev.cocyce.mtknative.console.ConsoleParser
 import dev.cocyce.mtknative.console.ConsoleShell
 import dev.cocyce.mtknative.engine.DeviceInfo
 import dev.cocyce.mtknative.engine.EngineListener
@@ -20,102 +22,93 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Date
 import java.util.Locale
-
-/** One line in the on-screen log. */
-data class LogLine(
-    val timestamp: String,
-    val level: LogLevel,
-    val message: String
-)
-
-/** Connection lifecycle surfaced to the UI. */
-sealed class ConnectionState {
-    object Idle : ConnectionState()
-    object Scanning : ConnectionState()
-    data class AwaitingPermission(val deviceId: String) : ConnectionState()
-    data class Connected(val info: DeviceInfo) : ConnectionState()
-    data class Failed(val reason: String) : ConnectionState()
-}
-
-/** Bulk transfer progress. */
-data class Progress(val label: String, val done: Long, val total: Long) {
-    val fraction: Float
-        get() = if (total <= 0) 0f else (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-
-    val text: String
-        get() = if (total <= 0) "$label: ${GptTable.formatSize(done)}"
-        else "$label: ${GptTable.formatSize(done)} / ${GptTable.formatSize(total)}"
-}
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Bridges the blocking engine to observable UI state.
+ * Owns the single [MtkSession] and publishes everything the fragments render.
  *
- * The ViewModel is itself the [EngineListener], so every log line and progress
- * tick from the protocol layer lands here regardless of whether the GUI or the
- * console tab started the operation.
+ * Fragments never touch USB directly: they observe this class and call its
+ * action methods. Two invariants hold the design together.
+ *
+ * **1. Work runs inside [guard], never in a nested coroutine.** `guard` launches
+ * exactly one coroutine on [Dispatchers.IO] and keeps [busy] true until it
+ * completes. Launching a second coroutine inside the block would return
+ * immediately and flip `busy` back to false while the transfer was still
+ * running, so the UI would re-enable buttons mid-dump.
+ *
+ * **2. [busy] is not the gate.** `MutableLiveData.postValue` is asynchronous, so
+ * a LiveData flag cannot make concurrent operations mutually exclusive — two
+ * clicks in the same frame can both read `false`. Exclusion is done with an
+ * [AtomicBoolean.compareAndSet]; the LiveData only mirrors it for rendering.
  */
-class MtkViewModel(application: Application) : AndroidViewModel(application), EngineListener {
+class MtkViewModel(private val app: Application) : AndroidViewModel(app) {
 
-    val session = MtkSession(application, this)
+    /**
+     * Declared before [session] deliberately.
+     *
+     * Kotlin evaluates property initializers in declaration order, so a listener
+     * defined further down the class would still be null when `MtkSession`
+     * captured it — the app would then crash on the first engine callback. The
+     * `_progress` field it touches is only read when a callback fires, long after
+     * construction, so its later declaration is safe.
+     */
+    private val listener = object : EngineListener {
+        override fun onLog(level: LogLevel, message: String) {
+            this@MtkViewModel.onLog(level, message)
+        }
 
-    private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
-    private val logBuffer = ArrayList<LogLine>()
-    private val consoleBuffer = StringBuilder()
-
-    init {
-        consoleBuffer.append(application.getString(R.string.console_welcome))
+        override fun onProgress(current: Long, total: Long, label: String) {
+            _progress.postValue(if (total <= 0L) null else Progress(current, total, label))
+        }
     }
 
-    private val _logs = MutableLiveData<List<LogLine>>(emptyList())
-    val logs: LiveData<List<LogLine>> = _logs
+    val session: MtkSession = MtkSession(app, listener)
+
+    /** Console interpreter sharing this session, so both tabs drive one device. */
+    private val shell = ConsoleShell(session) { line -> appendConsole(line) }
 
     private val _state = MutableLiveData<ConnectionState>(ConnectionState.Idle)
     val state: LiveData<ConnectionState> = _state
 
+    private val _device = MutableLiveData<DeviceInfo?>(null)
+    val device: LiveData<DeviceInfo?> = _device
+
+    private val _logs = MutableLiveData<List<LogLine>>(emptyList())
+    val logs: LiveData<List<LogLine>> = _logs
+
+    private val _gpt = MutableLiveData<GptTable?>(null)
+    val gpt: LiveData<GptTable?> = _gpt
+
     private val _partitions = MutableLiveData<List<GptPartition>>(emptyList())
     val partitions: LiveData<List<GptPartition>> = _partitions
 
-    private val _sectorSize = MutableLiveData(0x200)
+    private val _sectorSize = MutableLiveData(DEFAULT_SECTOR_SIZE)
     val sectorSize: LiveData<Int> = _sectorSize
-
-    private val _progress = MutableLiveData<Progress?>(null)
-    val progress: LiveData<Progress?> = _progress
-
-    private val _console = MutableLiveData(application.getString(R.string.console_welcome))
-    val console: LiveData<String> = _console
 
     private val _busy = MutableLiveData(false)
     val busy: LiveData<Boolean> = _busy
 
-    /**
-     * Gate flag. Kept separate from [_busy] because LiveData updates are posted
-     * asynchronously and would let two rapid calls both see "not busy".
-     */
+    private val _progress = MutableLiveData<Progress?>(null)
+    val progress: LiveData<Progress?> = _progress
+
+    /** Console transcript, already joined, because it binds straight to a TextView. */
+    private val _console = MutableLiveData("")
+    val console: LiveData<String> = _console
+
+    private val logBuffer = ArrayDeque<LogLine>()
+    private val consoleBuffer = ArrayDeque<String>()
     private val running = AtomicBoolean(false)
+    private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
 
-    /** True when the engine is running an operation; used to disable buttons. */
-    val isBusy: Boolean get() = running.get()
-
-    private val shell = ConsoleShell(session) { line -> appendConsole(line) }
-
-    // ------------------------------------------------------------------
-    // EngineListener (called from IO threads)
-    // ------------------------------------------------------------------
-
-    override fun onLog(level: LogLevel, message: String) {
-        val line = LogLine(timeFormat.format(Date()), level, message)
-        synchronized(logBuffer) {
-            logBuffer.add(line)
-            while (logBuffer.size > MAX_LOG_LINES) logBuffer.removeAt(0)
-            _logs.postValue(logBuffer.toList())
+    init {
+        appendConsole(app.getString(R.string.console_welcome))
+        // Surfaces the system permission dialog in the status bar instead of
+        // leaving the user staring at "Scanning" with no idea why.
+        session.onPermissionWait = { deviceId ->
+            _state.postValue(ConnectionState.AwaitingPermission(deviceId))
         }
-    }
-
-    override fun onProgress(label: String, done: Long, total: Long) {
-        _progress.postValue(Progress(label, done, total))
     }
 
     // ------------------------------------------------------------------
@@ -124,156 +117,220 @@ class MtkViewModel(application: Application) : AndroidViewModel(application), En
 
     fun connect() = guard {
         _state.postValue(ConnectionState.Scanning)
-        try {
-            val info = withContext(Dispatchers.IO) { session.connect() }
-            _state.postValue(ConnectionState.Connected(info))
-            onLog(LogLevel.INFO, "Ready. Run printgpt to inspect the partition table.")
-        } catch (error: Exception) {
-            _state.postValue(ConnectionState.Failed(describe(error)))
-            onLog(LogLevel.ERROR, describe(error))
-        }
+        runConnect { session.connect() }
     }
 
-    /** Connects to a device handed to us by the USB attach intent. */
     fun connectToDevice(device: UsbDevice) = guard {
-        _state.postValue(ConnectionState.Scanning)
-        try {
-            val info = withContext(Dispatchers.IO) { session.connectTo(device) }
-            _state.postValue(ConnectionState.Connected(info))
-            onLog(LogLevel.INFO, "Attached device ready: ${info.summary}")
-            // Already inside guard(), so call the unguarded loader directly —
-            // refreshPartitions() would bounce off the busy flag.
-            loadPartitions()
-        } catch (error: Exception) {
-            _state.postValue(ConnectionState.Failed(describe(error)))
-            onLog(LogLevel.ERROR, describe(error))
-        }
+        // The plug-in path usually grants permission implicitly, but a device
+        // the user picked from a list may still need the dialog, so say so.
+        _state.postValue(
+            if (session.permissions.hasPermission(device)) ConnectionState.Scanning
+            else ConnectionState.AwaitingPermission(usbIdOf(device))
+        )
+        runConnect { session.connectTo(device) }
     }
 
-    fun disconnect() {
+    fun disconnect() = guard {
         session.disconnect()
         _state.postValue(ConnectionState.Idle)
+        _device.postValue(null)
+        _gpt.postValue(null)
         _partitions.postValue(emptyList())
         _progress.postValue(null)
-        onLog(LogLevel.INFO, "Disconnected.")
-    }
-
-    fun refreshPartitions() = guard { loadPartitions() }
-
-    /** Unguarded partition reload; callers must already hold the busy gate. */
-    private suspend fun loadPartitions() {
-        runCatching {
-            withContext(Dispatchers.IO) { session.use { it.readGpt() } }
-        }.onSuccess { table ->
-            _sectorSize.postValue(table.sectorSize)
-            _partitions.postValue(table.partitions)
-        }.onFailure { error ->
-            onLog(LogLevel.ERROR, describe(error))
-        }
-    }
-
-    fun dumpPartition(partition: GptPartition) = guard {
-        runCatching {
-            withContext(Dispatchers.IO) {
-                session.use { engine ->
-                    // Read the live table once: sector size and LBAs must agree
-                    // with the device, not with a stale value cached in the UI.
-                    val table = engine.readGpt()
-                    val file = File(session.outputDir, "${partition.name}.img")
-                    file.outputStream().use { engine.dumpPartition(partition, table, it) }
-                    file.absolutePath
-                }
-            }
-        }.onSuccess { path ->
-            onLog(LogLevel.INFO, "Saved ${partition.name} to $path")
-        }.onFailure { error ->
-            onLog(LogLevel.ERROR, describe(error))
-        }.also { _progress.postValue(null) }
     }
 
     fun reboot() = guard {
-        runCatching {
-            withContext(Dispatchers.IO) { session.use { it.reboot() } }
-        }.onFailure { error -> onLog(LogLevel.ERROR, describe(error)) }
+        session.use { engine -> engine.reboot() }
+        _state.postValue(ConnectionState.Idle)
     }
 
-    fun memRead(address: String, length: String) = guard {
-        runCatching {
-            withContext(Dispatchers.IO) {
-                session.use { engine ->
-                    engine.memRead(parseNumber(address), parseNumber(length).toInt(), null)
-                }
+    /** Reads and decodes the GPT, then publishes partitions and sector size. */
+    fun refreshPartitions() = guard {
+        session.use { engine -> publishTable(engine.readGpt()) }
+    }
+
+    /**
+     * Dumps [partition] to `<outputDir>/<name>.bin`.
+     *
+     * Uses the cached table for geometry when one is loaded, and re-reads it
+     * otherwise, since the engine needs the table to resolve byte offsets.
+     */
+    fun dumpPartition(partition: GptPartition) = guard {
+        session.use { engine ->
+            val table = _gpt.value ?: engine.readGpt()
+            val target = resolveDumpFile(partition.name)
+            val written = target.outputStream().use { out ->
+                engine.dumpPartition(partition, table, out)
             }
-        }.onFailure { error -> onLog(LogLevel.ERROR, describe(error)) }
+            publishTable(table)
+            onLog(LogLevel.INFO, app.getString(
+                R.string.dumped_bytes, GptTable.formatSize(written), target.absolutePath))
+        }
     }
 
-    fun submitConsole(command: String) {
-        val trimmed = command.trim()
-        if (trimmed.isEmpty()) return
-        appendConsole("\$ $trimmed")
-        guard {
-            withContext(Dispatchers.IO) { shell.execute(trimmed) }
+    /**
+     * Memory read driven by the two text fields, so both arrive unparsed.
+     *
+     * Numbers follow `stage2.py`'s `getint()` convention via
+     * [ConsoleParser.parseNumber]: decimal first, then base 16.
+     */
+    fun memRead(address: String, length: String) = guard {
+        val start: Long
+        val count: Long
+        try {
+            start = ConsoleParser.parseNumber(address.trim())
+            count = ConsoleParser.parseNumber(length.trim())
+        } catch (error: NumberFormatException) {
+            onLog(LogLevel.ERROR, app.getString(R.string.memread_invalid))
+            return@guard
         }
+        if (count <= 0L) {
+            onLog(LogLevel.ERROR, app.getString(R.string.memread_invalid))
+            return@guard
+        }
+        session.use { engine ->
+            val target = File(session.outputDir, "memread_${WireFormat.hex32(start.toInt())}.bin")
+            target.outputStream().use { out -> engine.memRead(start, count.toInt(), out) }
+            onLog(LogLevel.INFO, app.getString(
+                R.string.dumped_bytes, GptTable.formatSize(count), target.absolutePath))
+        }
+    }
+
+    /** Prints the dump directory into the log; the files live in app storage. */
+    fun openOutputFolder() {
+        onLog(LogLevel.INFO, app.getString(R.string.output_dir, session.outputDir.absolutePath))
     }
 
     fun clearLogs() {
-        synchronized(logBuffer) {
-            logBuffer.clear()
-            _logs.postValue(emptyList())
-        }
+        logBuffer.clear()
+        _logs.value = emptyList()
     }
 
     fun clearConsole() {
-        consoleBuffer.setLength(0)
-        _console.postValue("")
+        consoleBuffer.clear()
+        _console.value = ""
+    }
+
+    /** Runs one console line; output arrives through [console]. */
+    fun submitConsole(line: String) = guard { shell.execute(line) }
+
+    /** Appends a line to the log pane. Safe to call from any thread. */
+    fun onLog(level: LogLevel, message: String) {
+        logBuffer.addLast(LogLine(clock.format(Date()), level, message))
+        while (logBuffer.size > MAX_LOG_LINES) logBuffer.removeFirst()
+        _logs.postValue(logBuffer.toList())
     }
 
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
 
-    /** Serialises operations so two blocking USB sessions never overlap. */
-    private fun guard(block: suspend () -> Unit) {
+    /**
+     * Serialises operations onto a single background coroutine.
+     *
+     * @return true when the work was started, false if one is already in flight
+     */
+    private fun guard(block: suspend () -> Unit): Boolean {
         if (!running.compareAndSet(false, true)) {
-            onLog(LogLevel.WARN, "Busy — waiting for the current operation to finish.")
-            return
+            onLog(LogLevel.WARN, app.getString(R.string.busy_wait))
+            return false
         }
         _busy.value = true
         viewModelScope.launch {
             try {
-                block()
-            } catch (error: Exception) {
-                onLog(LogLevel.ERROR, describe(error))
+                withContext(Dispatchers.IO) { block() }
+            } catch (error: Throwable) {
+                onLog(LogLevel.ERROR, describeError(error))
             } finally {
                 running.set(false)
                 _busy.value = false
+                _progress.postValue(null)
             }
         }
+        return true
     }
 
-    private fun appendConsole(text: String) {
-        synchronized(consoleBuffer) {
-            consoleBuffer.append(text).append('\n')
-            val overflow = consoleBuffer.length - MAX_CONSOLE_CHARS
-            if (overflow > 0) consoleBuffer.delete(0, overflow)
-            _console.postValue(consoleBuffer.toString())
+    private fun publishTable(table: GptTable) {
+        _gpt.postValue(table)
+        _partitions.postValue(table.partitions)
+        _sectorSize.postValue(table.sectorSize)
+        onLog(LogLevel.INFO, app.getString(R.string.found_partitions, table.partitions.size))
+    }
+
+    /** Shared success/failure handling for both connect paths. */
+    private suspend fun runConnect(connect: suspend () -> Unit) {
+        try {
+            connect()
+            afterConnect()
+        } catch (error: Throwable) {
+            _state.postValue(ConnectionState.Failed(describeError(error)))
+            throw error
         }
     }
 
-    private fun describe(error: Throwable): String = when (error) {
-        is BromException -> error.message ?: "BROM protocol error"
-        else -> "${error.javaClass.simpleName}: ${error.message}"
+    private fun usbIdOf(device: UsbDevice): String =
+        "%04X:%04X".format(device.vendorId, device.productId)
+
+    private fun afterConnect() {
+        val info = session.deviceInfo
+        _device.postValue(info)
+        if (info != null) _state.postValue(ConnectionState.Connected(info))
     }
 
-    private fun parseNumber(value: String): Long {
-        val trimmed = value.trim()
-        trimmed.toLongOrNull()?.let { return it }
-        val hex = trimmed.removePrefix("0x").removePrefix("0X")
-        return hex.toLongOrNull(16) ?: throw IllegalArgumentException("Not a number: '$value'")
+    private fun resolveDumpFile(name: String): File {
+        val safe = name.trim().replace(UNSAFE_FILENAME, "_").ifBlank { "partition" }
+        return File(session.outputDir, "$safe.bin").also { it.parentFile?.mkdirs() }
     }
 
-    private companion object {
-        const val MAX_LOG_LINES = 500
-        const val MAX_CONSOLE_CHARS = 200_000
+    private fun describeError(error: Throwable): String = when (error) {
+        is BromException -> error.message ?: "BROM error"
+        is SecurityException -> app.getString(R.string.permission_denied_hint)
+        is IllegalStateException -> error.message ?: app.getString(R.string.not_connected)
+        else -> error.message ?: error.javaClass.simpleName
     }
+
+    private fun appendConsole(line: String) {
+        consoleBuffer.addLast(line)
+        while (consoleBuffer.size > MAX_CONSOLE_LINES) consoleBuffer.removeFirst()
+        _console.postValue(consoleBuffer.joinToString("\n"))
+    }
+
+    companion object {
+        private const val MAX_LOG_LINES = 500
+        private const val MAX_CONSOLE_LINES = 500
+
+        /** Assumed until a GPT is read; 4Kn devices republish the real value. */
+        private const val DEFAULT_SECTOR_SIZE = 0x200
+
+        private val UNSAFE_FILENAME = Regex("[^A-Za-z0-9._-]")
+    }
+}
+
+/**
+ * Connection lifecycle as rendered by the status bar and device tab.
+ *
+ * `MainActivity.renderState` switches over this exhaustively as an expression,
+ * so every member here must be handled there — adding a state means updating
+ * both files.
+ */
+sealed class ConnectionState {
+    /** Nothing plugged in, or deliberately disconnected. */
+    data object Idle : ConnectionState()
+
+    /** Polling for a MediaTek device in BROM mode. */
+    data object Scanning : ConnectionState()
+
+    /** A device was found and the system permission dialog is on screen. */
+    data class AwaitingPermission(val deviceId: String) : ConnectionState()
+
+    data class Connected(val info: DeviceInfo) : ConnectionState()
+
+    data class Failed(val reason: String) : ConnectionState()
+}
+
+data class LogLine(val timestamp: String, val level: LogLevel, val message: String)
+
+data class Progress(val current: Long, val total: Long, val label: String) {
+    val fraction: Float
+        get() = if (total <= 0L) 0f else (current.toFloat() / total.toFloat()).coerceIn(0f, 1f)
 }
